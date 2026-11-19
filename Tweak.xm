@@ -1,4 +1,4 @@
-// TFTAssist.xm — 金铲铲之战 iOS 辅助 v0.2
+// TFTAssist.xm — 金铲铲之战 iOS 辅助 v0.3
 // 能力：悬浮面板 / ReplayKit 抓屏 / Vision OCR / 阵容建议 / 越狱机自动点击
 // 边界：只读画面，不修改任何游戏数据；概率由服务端决定，不可改。
 
@@ -7,11 +7,14 @@
 #import <ReplayKit/ReplayKit.h>
 #import <Vision/Vision.h>
 #import <objc/runtime.h>
+#import <stdarg.h>
 
 #if TFT_JAILBREAK
 #import <IOKit/hid/IOHIDEventSystemClient.h>
 #import <IOKit/hid/IOHIDEvent.h>
 #endif
+
+static void TFTWriteLog(NSString *fmt, ...);
 
 static NSString *const kCfgPath  = @"/var/mobile/Library/TFTAssist/lineups.json";
 static NSString *const kCalibKey = @"TFT.calib";      // 点击坐标（商店五张卡的中心）
@@ -101,6 +104,8 @@ static void TFTTap(CGPoint pt) {
 @property (atomic, assign) CFAbsoluteTime lastTick;
 @property (nonatomic, strong) NSMutableArray<NSValue *> *calib;
 @property (nonatomic, assign) BOOL calibrating;
+@property (nonatomic, assign) BOOL started;
+@property (nonatomic, assign) BOOL panelTried;
 @property (nonatomic, assign) CFAbsoluteTime lastBuy;
 @property (nonatomic, strong) NSMutableDictionary *seen;
 @property (nonatomic, strong) NSString *lastShopSig;
@@ -117,6 +122,9 @@ static void TFTTap(CGPoint pt) {
 }
 
 - (void)start {
+    if (self.started) return;
+    self.started = YES;
+    TFTWriteLog(@"start: begin, bundle=%@", [[NSBundle mainBundle] bundleIdentifier]);
     self.cfg = [TFTConfig load];
     [self loadHeroCatalog];
     NSArray *c = [[NSUserDefaults standardUserDefaults] objectForKey:kCalibKey];
@@ -130,52 +138,81 @@ static void TFTTap(CGPoint pt) {
 #pragma mark 面板
 
 - (void)buildPanel {
+    if (self.panel) return;
+    self.panelTried = YES;
+
     UIWindowScene *scene = nil;
-    for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
-        if ([s isKindOfClass:[UIWindowScene class]]) { scene = (UIWindowScene *)s; break; }
-    if (!scene) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{ [self buildPanel]; });
-        return;
+    for (UIScene *sc in UIApplication.sharedApplication.connectedScenes) {
+        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+        UIWindowScene *ws = (UIWindowScene *)sc;
+        if (ws.activationState == UISceneActivationStateForegroundActive) { scene = ws; break; }
+        if (!scene) scene = ws;
     }
-    UIWindow *w = [[UIWindow alloc] initWithWindowScene:scene];
-    w.windowLevel = UIWindowLevelAlert + 200;
-    w.frame = CGRectMake(10, 90, 320, 330);
-    w.backgroundColor = [UIColor colorWithWhite:0.07 alpha:0.93];
-    w.layer.cornerRadius = 14; w.layer.masksToBounds = YES;
+
+    UIWindow *w = nil;
+    if (scene) {
+        w = [[UIWindow alloc] initWithWindowScene:scene];
+    } else {
+        w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    }
+    w.windowLevel = UIWindowLevelAlert + 1000;
+    w.backgroundColor = [UIColor clearColor];
     w.hidden = NO;
-    self.panel = w;
 
-    UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 200, 22)];
-    t.text = @"林森制作 · TFT辅助 v0.2"; t.textColor = UIColor.whiteColor;
+    UIViewController *vc = [UIViewController new];
+    vc.view.backgroundColor = [UIColor clearColor];
+    w.rootViewController = vc;
+    UIView *root = vc.view;
+
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(10, 90, 320, 330)];
+    box.backgroundColor = [UIColor colorWithWhite:0.07 alpha:0.95];
+    box.layer.cornerRadius = 14; box.layer.masksToBounds = YES;
+    box.userInteractionEnabled = YES;
+    [root addSubview:box];
+
+    UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 210, 22)];
+    t.text = @"林森制作 · TFT辅助 v0.3"; t.textColor = UIColor.whiteColor;
     t.font = [UIFont boldSystemFontOfSize:14];
-    [w addSubview:t];
+    t.userInteractionEnabled = YES;
+    [box addSubview:t];
 
-    self.swCapture = [[UISwitch alloc] initWithFrame:CGRectMake(262, 4, 51, 31)];
-    self.swCapture.transform = CGAffineTransformMakeScale(0.75, 0.75);
+    UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    closeBtn.frame = CGRectMake(286, 4, 26, 26);
+    [closeBtn setTitle:@"×" forState:UIControlStateNormal];
+    closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:18];
+    [closeBtn addTarget:self action:@selector(hidePanel) forControlEvents:UIControlEventTouchUpInside];
+    [box addSubview:closeBtn];
+
+    self.swCapture = [[UISwitch alloc] initWithFrame:CGRectMake(258, 4, 51, 31)];
+    self.swCapture.transform = CGAffineTransformMakeScale(0.62, 0.62);
     [self.swCapture addTarget:self action:@selector(onCapture:) forControlEvents:UIControlEventValueChanged];
-    [w addSubview:self.swCapture];
+    [box addSubview:self.swCapture];
 
     self.headline = [[UILabel alloc] initWithFrame:CGRectMake(12, 30, 296, 20)];
-    self.headline.text = @"未开始"; self.headline.textColor = [UIColor colorWithWhite:0.6 alpha:1];
+    self.headline.text = @"已加载 · 未开始"; self.headline.textColor = [UIColor colorWithWhite:0.6 alpha:1];
     self.headline.font = [UIFont systemFontOfSize:11];
-    [w addSubview:self.headline];
+    [box addSubview:self.headline];
 
     UIButton *reload = [self btn:@"重载配置" x:12 y:54 w:92];
     [reload addTarget:self action:@selector(reloadCfg) forControlEvents:UIControlEventTouchUpInside];
+    [box addSubview:reload];
     UIButton *calib = [self btn:@"校准点击" x:112 y:54 w:92];
     [calib addTarget:self action:@selector(startCalib) forControlEvents:UIControlEventTouchUpInside];
+    [box addSubview:calib];
     UIButton *next = [self btn:@"换阵容" x:212 y:54 w:96];
     [next addTarget:self action:@selector(nextLineup) forControlEvents:UIControlEventTouchUpInside];
+    [box addSubview:next];
     UIButton *clr = [self btn:@"清空池" x:212 y:84 w:96];
     [clr addTarget:self action:@selector(clearPool) forControlEvents:UIControlEventTouchUpInside];
+    [box addSubview:clr];
 
     UILabel *autoL = [[UILabel alloc] initWithFrame:CGRectMake(12, 84, 120, 20)];
     autoL.text = @"自动点击(越狱)"; autoL.textColor = [UIColor colorWithWhite:0.75 alpha:1];
     autoL.font = [UIFont systemFontOfSize:11];
-    [w addSubview:autoL];
+    [box addSubview:autoL];
     self.swAuto = [[UISwitch alloc] initWithFrame:CGRectMake(140, 78, 51, 31)];
     self.swAuto.transform = CGAffineTransformMakeScale(0.7, 0.7);
-    [w addSubview:self.swAuto];
+    [box addSubview:self.swAuto];
 #if !TFT_JAILBREAK
     self.swAuto.enabled = NO;
     autoL.text = @"自动点击(需越狱)";
@@ -188,13 +225,36 @@ static void TFTTap(CGPoint pt) {
     tv.font = [UIFont fontWithName:@"Menlo" size:10.5] ?: [UIFont systemFontOfSize:10.5];
     tv.editable = NO; tv.layer.cornerRadius = 8;
     tv.text = @"林森制作 · 仅识别不改数据\n1) 右上开关开始识别（首次授权屏幕录制）\n2) 「校准点击」依次点商店 5 张卡\n3) 越狱机可开「自动点击」\n\n概率由服务端决定，本工具只做识别与建议";
-    [w addSubview:tv];
+    [box addSubview:tv];
     self.logView = tv;
 
-    // 拖动
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)];
     [t addGestureRecognizer:pan];
-    t.userInteractionEnabled = YES;
+
+    self.panel = w;
+    [w makeKeyAndVisible];
+    TFTWriteLog(@"panel built, scene=%@ level=%.0f", scene ? @"yes" : @"no", w.windowLevel);
+
+    /* 兜底：0.6 秒后如果窗口没挂上屏幕，把面板塞进主 window */
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (box.window) return;
+        UIWindow *kw = nil;
+        for (UIWindow *x in UIApplication.sharedApplication.windows) {
+            if (x.isKeyWindow) { kw = x; break; }
+        }
+        if (!kw && UIApplication.sharedApplication.windows.count) kw = UIApplication.sharedApplication.windows.firstObject;
+        if (kw) {
+            [kw.rootViewController.view addSubview:box];
+            TFTWriteLog(@"panel fallback -> key window %@", NSStringFromCGRect(kw.bounds));
+        } else {
+            TFTWriteLog(@"panel fallback failed: no window");
+        }
+    });
+}
+
+- (void)hidePanel {
+    self.panel.hidden = YES;
+    TFTWriteLog(@"panel hidden");
 }
 
 - (UIButton *)btn:(NSString *)title x:(CGFloat)x y:(CGFloat)y w:(CGFloat)w {
@@ -455,11 +515,43 @@ static void TFTTap(CGPoint pt) {
 
 #pragma mark - 注入
 
-%hook UIApplication
-- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    BOOL r = %orig;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ [[TFTAssist shared] start]; });
-    return r;
+static void TFTWriteLog(NSString *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    NSLog(@"[TFTAssist] %@", s);
+    NSString *p = [NSTemporaryDirectory() stringByAppendingPathComponent:@"tft.log"];
+    NSString *line = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], s];
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:p];
+    if (!fh) {
+        [line writeToFile:p atomically:NO encoding:NSUTF8StringEncoding error:nil];
+    } else {
+        @try { [fh seekToEndOfFile]; [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; [fh closeFile]; } @catch (NSException *e) {}
+    }
 }
-%end
+
+%ctor {
+    @autoreleasepool {
+        TFTWriteLog(@"dylib loaded in %@", [[NSBundle mainBundle] bundleIdentifier]);
+        NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+
+        [nc addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+            TFTWriteLog(@"notification: didFinishLaunching");
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [[TFTAssist shared] start];
+            });
+        }];
+
+        [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+            TFTAssist *a = [TFTAssist shared];
+            TFTWriteLog(@"notification: didBecomeActive panel=%@", a.panel ? @"yes" : @"no");
+            [a start];
+            if (!a.panel) [a buildPanel];
+        }];
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            TFTAssist *a = [TFTAssist shared];
+            if (!a.panel) { TFTWriteLog(@"fallback timer -> start"); [a start]; }
+        });
+    }
+}
