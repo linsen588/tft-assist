@@ -451,6 +451,8 @@ static void TFTTap(CGPoint pt) {
 #endif
 }
 
+@end
+
 #pragma mark - 注入
 
 %hook UIApplication
