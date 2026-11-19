@@ -146,7 +146,7 @@ static void TFTTap(CGPoint pt) {
     self.panel = w;
 
     UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 200, 22)];
-    t.text = @"TFT 辅助 v0.2"; t.textColor = UIColor.whiteColor;
+    t.text = @"林森制作 · TFT辅助 v0.2"; t.textColor = UIColor.whiteColor;
     t.font = [UIFont boldSystemFontOfSize:14];
     [w addSubview:t];
 
@@ -187,7 +187,7 @@ static void TFTTap(CGPoint pt) {
     tv.textColor = [UIColor colorWithWhite:0.93 alpha:1];
     tv.font = [UIFont fontWithName:@"Menlo" size:10.5] ?: [UIFont systemFontOfSize:10.5];
     tv.editable = NO; tv.layer.cornerRadius = 8;
-    tv.text = @"1) 右上开关开始识别（首次授权屏幕录制）\n2) 「校准点击」依次点商店 5 张卡\n3) 越狱机可开「自动点击」\n\n概率由服务端决定，本工具只做识别与建议";
+    tv.text = @"林森制作 · 仅识别不改数据\n1) 右上开关开始识别（首次授权屏幕录制）\n2) 「校准点击」依次点商店 5 张卡\n3) 越狱机可开「自动点击」\n\n概率由服务端决定，本工具只做识别与建议";
     [w addSubview:tv];
     self.logView = tv;
 
