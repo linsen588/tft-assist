@@ -1,4 +1,4 @@
-// TFTAssist.xm — 金铲铲之战 iOS 辅助 v0.3
+// TFTAssist.xm — 金铲铲之战 iOS 辅助 v0.4
 // 能力：悬浮面板 / ReplayKit 抓屏 / Vision OCR / 阵容建议 / 越狱机自动点击
 // 边界：只读画面，不修改任何游戏数据；概率由服务端决定，不可改。
 
@@ -6,6 +6,7 @@
 #import <Foundation/Foundation.h>
 #import <ReplayKit/ReplayKit.h>
 #import <Vision/Vision.h>
+#import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 #import <stdarg.h>
 
@@ -106,6 +107,12 @@ static void TFTTap(CGPoint pt) {
 @property (nonatomic, assign) BOOL calibrating;
 @property (nonatomic, assign) BOOL started;
 @property (nonatomic, assign) BOOL panelTried;
+@property (nonatomic, strong) UIView *box;
+@property (nonatomic, strong) UIButton *bubble;
+@property (nonatomic, strong) AVSpeechSynthesizer *tts;
+@property (nonatomic, strong) UISwitch *swVoice;
+@property (nonatomic, assign) CFAbsoluteTime lastSpeak;
+@property (nonatomic, assign) NSInteger lastAutoIdx;
 @property (nonatomic, assign) CFAbsoluteTime lastBuy;
 @property (nonatomic, strong) NSMutableDictionary *seen;
 @property (nonatomic, strong) NSString *lastShopSig;
@@ -149,12 +156,10 @@ static void TFTTap(CGPoint pt) {
         if (!scene) scene = ws;
     }
 
-    UIWindow *w = nil;
-    if (scene) {
-        w = [[UIWindow alloc] initWithWindowScene:scene];
-    } else {
-        w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    }
+    CGRect frame = CGRectMake(10, 90, 340, 380);
+    UIWindow *w = scene ? [[UIWindow alloc] initWithWindowScene:scene]
+                        : [[UIWindow alloc] initWithFrame:frame];
+    w.frame = frame;                       /* 窗口只占面板大小，不挡游戏操作 */
     w.windowLevel = UIWindowLevelAlert + 1000;
     w.backgroundColor = [UIColor clearColor];
     w.hidden = NO;
@@ -164,97 +169,150 @@ static void TFTTap(CGPoint pt) {
     w.rootViewController = vc;
     UIView *root = vc.view;
 
-    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(10, 90, 320, 330)];
+    /* ---- 面板本体 ---- */
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 340, 380)];
     box.backgroundColor = [UIColor colorWithWhite:0.07 alpha:0.95];
     box.layer.cornerRadius = 14; box.layer.masksToBounds = YES;
     box.userInteractionEnabled = YES;
     [root addSubview:box];
+    self.box = box;
 
-    UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 210, 22)];
-    t.text = @"林森制作 · TFT辅助 v0.3"; t.textColor = UIColor.whiteColor;
+    UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 6, 250, 22)];
+    t.text = @"林森制作 · TFT辅助 v0.4"; t.textColor = UIColor.whiteColor;
     t.font = [UIFont boldSystemFontOfSize:14];
     t.userInteractionEnabled = YES;
     [box addSubview:t];
 
-    UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    closeBtn.frame = CGRectMake(286, 4, 26, 26);
-    [closeBtn setTitle:@"×" forState:UIControlStateNormal];
-    closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:18];
-    [closeBtn addTarget:self action:@selector(hidePanel) forControlEvents:UIControlEventTouchUpInside];
-    [box addSubview:closeBtn];
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)];
+    [t addGestureRecognizer:pan];
 
-    self.swCapture = [[UISwitch alloc] initWithFrame:CGRectMake(258, 4, 51, 31)];
-    self.swCapture.transform = CGAffineTransformMakeScale(0.62, 0.62);
-    [self.swCapture addTarget:self action:@selector(onCapture:) forControlEvents:UIControlEventValueChanged];
-    [box addSubview:self.swCapture];
+    /* 收起（不是关闭）：收成小球，点回来 */
+    UIButton *mini = [UIButton buttonWithType:UIButtonTypeSystem];
+    mini.frame = CGRectMake(302, 4, 32, 28);
+    [mini setTitle:@"—" forState:UIControlStateNormal];
+    mini.titleLabel.font = [UIFont boldSystemFontOfSize:18];
+    [mini addTarget:self action:@selector(collapse) forControlEvents:UIControlEventTouchUpInside];
+    [box addSubview:mini];
 
-    self.headline = [[UILabel alloc] initWithFrame:CGRectMake(12, 30, 296, 20)];
+    /* 真正关闭：整块隐藏，靠日志开关重新唤出 */
+    UIButton *xBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    xBtn.frame = CGRectMake(330, 4, 8, 8);
+    xBtn.hidden = YES;
+    [box addSubview:xBtn];
+
+    self.headline = [[UILabel alloc] initWithFrame:CGRectMake(12, 28, 316, 18)];
     self.headline.text = @"已加载 · 未开始"; self.headline.textColor = [UIColor colorWithWhite:0.6 alpha:1];
     self.headline.font = [UIFont systemFontOfSize:11];
     [box addSubview:self.headline];
 
-    UIButton *reload = [self btn:@"重载配置" x:12 y:54 w:92];
+    UIButton *reload = [self btn:@"重载配置" x:12 y:46 w:92];
     [reload addTarget:self action:@selector(reloadCfg) forControlEvents:UIControlEventTouchUpInside];
     [box addSubview:reload];
-    UIButton *calib = [self btn:@"校准点击" x:112 y:54 w:92];
+    UIButton *calib = [self btn:@"校准点击" x:112 y:46 w:92];
     [calib addTarget:self action:@selector(startCalib) forControlEvents:UIControlEventTouchUpInside];
     [box addSubview:calib];
-    UIButton *next = [self btn:@"换阵容" x:212 y:54 w:96];
+    UIButton *next = [self btn:@"换阵容" x:212 y:46 w:116];
     [next addTarget:self action:@selector(nextLineup) forControlEvents:UIControlEventTouchUpInside];
     [box addSubview:next];
-    UIButton *clr = [self btn:@"清空池" x:212 y:84 w:96];
+
+    UIButton *clr = [self btn:@"清空池" x:12 y:74 w:82];
     [clr addTarget:self action:@selector(clearPool) forControlEvents:UIControlEventTouchUpInside];
     [box addSubview:clr];
 
-    UILabel *autoL = [[UILabel alloc] initWithFrame:CGRectMake(12, 84, 120, 20)];
-    autoL.text = @"自动点击(越狱)"; autoL.textColor = [UIColor colorWithWhite:0.75 alpha:1];
+    UILabel *voiceL = [[UILabel alloc] initWithFrame:CGRectMake(100, 78, 62, 18)];
+    voiceL.text = @"语音提示"; voiceL.textColor = [UIColor colorWithWhite:0.78 alpha:1];
+    voiceL.font = [UIFont systemFontOfSize:11];
+    [box addSubview:voiceL];
+    self.swVoice = [[UISwitch alloc] initWithFrame:CGRectMake(156, 72, 51, 31)];
+    self.swVoice.transform = CGAffineTransformMakeScale(0.64, 0.64);
+    self.swVoice.on = YES;
+    [box addSubview:self.swVoice];
+
+    UILabel *autoL = [[UILabel alloc] initWithFrame:CGRectMake(212, 78, 70, 18)];
+    autoL.text = @"自动点击"; autoL.textColor = [UIColor colorWithWhite:0.75 alpha:1];
     autoL.font = [UIFont systemFontOfSize:11];
     [box addSubview:autoL];
-    self.swAuto = [[UISwitch alloc] initWithFrame:CGRectMake(140, 78, 51, 31)];
-    self.swAuto.transform = CGAffineTransformMakeScale(0.7, 0.7);
+    self.swAuto = [[UISwitch alloc] initWithFrame:CGRectMake(276, 72, 51, 31)];
+    self.swAuto.transform = CGAffineTransformMakeScale(0.64, 0.64);
     [box addSubview:self.swAuto];
 #if !TFT_JAILBREAK
     self.swAuto.enabled = NO;
-    autoL.text = @"自动点击(需越狱)";
+    autoL.text = @"自动点(越狱)";
     autoL.textColor = [UIColor colorWithWhite:0.4 alpha:1];
 #endif
 
-    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(10, 110, 300, 208)];
+    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(10, 104, 320, 266)];
     tv.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35];
     tv.textColor = [UIColor colorWithWhite:0.93 alpha:1];
     tv.font = [UIFont fontWithName:@"Menlo" size:10.5] ?: [UIFont systemFontOfSize:10.5];
     tv.editable = NO; tv.layer.cornerRadius = 8;
-    tv.text = @"林森制作 · 仅识别不改数据\n1) 右上开关开始识别（首次授权屏幕录制）\n2) 「校准点击」依次点商店 5 张卡\n3) 越狱机可开「自动点击」\n\n概率由服务端决定，本工具只做识别与建议";
+    tv.text = @"林森制作 · 仅识别不改数据\n1) 上方开关打开识别（首次授权「屏幕录制」）\n2) 语音提示默认开，会念买牌建议\n3) 阵容会按来牌自动切换\n4) 「—」收起成小球，点小球再展开\n\n概率由服务端决定，本工具只做识别与建议";
     [box addSubview:tv];
     self.logView = tv;
 
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)];
-    [t addGestureRecognizer:pan];
+    /* ---- 收起后的悬浮球 ---- */
+    UIButton *bubble = [UIButton buttonWithType:UIButtonTypeCustom];
+    bubble.frame = CGRectMake(0, 0, 60, 60);
+    bubble.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.92];
+    bubble.layer.cornerRadius = 30; bubble.layer.masksToBounds = YES;
+    bubble.layer.borderWidth = 1.5; bubble.layer.borderColor = [UIColor colorWithRed:0.2 green:0.75 blue:1 alpha:1].CGColor;
+    [bubble setTitle:@"林" forState:UIControlStateNormal];
+    [bubble setTitleColor:[UIColor colorWithRed:0.2 green:0.75 blue:1 alpha:1] forState:UIControlStateNormal];
+    bubble.titleLabel.font = [UIFont boldSystemFontOfSize:22];
+    bubble.hidden = YES;
+    [bubble addTarget:self action:@selector(expand) forControlEvents:UIControlEventTouchUpInside];
+    [root addSubview:bubble];
+    self.bubble = bubble;
+    UIPanGestureRecognizer *bpan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)];
+    [bubble addGestureRecognizer:bpan];
 
     self.panel = w;
     [w makeKeyAndVisible];
-    TFTWriteLog(@"panel built, scene=%@ level=%.0f", scene ? @"yes" : @"no", w.windowLevel);
+    TFTWriteLog(@"panel built v0.4 scene=%@ frame=%@", scene ? @"yes" : @"no", NSStringFromCGRect(w.frame));
 
-    /* 兜底：0.6 秒后如果窗口没挂上屏幕，把面板塞进主 window */
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (box.window) return;
         UIWindow *kw = nil;
-        for (UIWindow *x in UIApplication.sharedApplication.windows) {
+        for (UIWindow *x in UIApplication.sharedApplication.windows)
             if (x.isKeyWindow) { kw = x; break; }
-        }
         if (!kw && UIApplication.sharedApplication.windows.count) kw = UIApplication.sharedApplication.windows.firstObject;
         if (kw) {
             [kw.rootViewController.view addSubview:box];
-            TFTWriteLog(@"panel fallback -> key window %@", NSStringFromCGRect(kw.bounds));
-        } else {
-            TFTWriteLog(@"panel fallback failed: no window");
+            TFTWriteLog(@"panel fallback -> key window");
         }
     });
 }
 
-- (void)hidePanel {
-    self.panel.hidden = YES;
-    TFTWriteLog(@"panel hidden");
+#pragma mark 收起 / 展开
+
+- (void)collapse {
+    self.box.hidden = YES;
+    self.bubble.hidden = NO;
+    CGRect f = self.panel.frame;
+    self.panel.frame = CGRectMake(f.origin.x, f.origin.y, 60, 60);
+    TFTWriteLog(@"panel collapsed");
+}
+
+- (void)expand {
+    self.bubble.hidden = YES;
+    self.box.hidden = NO;
+    CGRect f = self.panel.frame;
+    self.panel.frame = CGRectMake(f.origin.x, f.origin.y, 340, 380);
+    TFTWriteLog(@"panel expanded");
+}
+
+#pragma mark 语音
+
+- (void)speak:(NSString *)text {
+    if (!self.swVoice.isOn || !text.length) return;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (now - self.lastSpeak < 4.0) return;
+    self.lastSpeak = now;
+    if (!self.tts) self.tts = [AVSpeechSynthesizer new];
+    AVSpeechUtterance *u = [AVSpeechUtterance speechUtteranceWithString:text];
+    u.voice = [AVSpeechSynthesisVoice voiceWithLanguage:@"zh-CN"];
+    u.rate = 0.5f;
+    [self.tts speakUtterance:u];
 }
 
 - (UIButton *)btn:(NSString *)title x:(CGFloat)x y:(CGFloat)y w:(CGFloat)w {
@@ -455,13 +513,32 @@ static void TFTTap(CGPoint pt) {
         }
     }
 
-    /* --- 阵容建议 --- */
+    /* --- 自动阵容匹配：用屏幕上出现的阵容牌数量打分 --- */
+    NSInteger bestIdx = MIN(self.cfg.activeIndex, (NSInteger)self.cfg.lineups.count - 1);
+    NSInteger bestScore = -1;
+    for (NSUInteger i = 0; i < self.cfg.lineups.count; i++) {
+        NSArray *us = self.cfg.lineups[i][@"units"] ?: @[];
+        NSInteger sc = 0;
+        for (NSString *u in us) if ([all rangeOfString:u].location != NSNotFound) sc++;
+        if (sc > bestScore) { bestScore = sc; bestIdx = (NSInteger)i; }
+    }
+    if (self.cfg.lineups.count && bestIdx != self.cfg.activeIndex && bestScore >= 3) {
+        self.cfg.activeIndex = bestIdx;
+        [[NSUserDefaults standardUserDefaults] setObject:@(bestIdx) forKey:@"TFT.activeLineup"];
+        NSString *nm = self.cfg.lineups[bestIdx][@"name"] ?: @"?";
+        [self log:@"自动换阵(%ld 张命中) → %@", (long)bestScore, nm];
+        [self speak:[NSString stringWithFormat:@"自动换到 %@", nm]];
+    }
+
     NSDictionary *lu = nil;
-    if (self.cfg.lineups.count)
-        lu = self.cfg.lineups[MIN(self.cfg.activeIndex, (NSInteger)self.cfg.lineups.count - 1)];
+    if (self.cfg.lineups.count) lu = self.cfg.lineups[bestIdx];
     NSArray *units = lu[@"units"] ?: @[];
     NSMutableArray *buy = [NSMutableArray array];
-    for (NSString *u in units) if ([all rangeOfString:u].location != NSNotFound && ![buy containsObject:u]) [buy addObject:u];
+    NSMutableArray *need = [NSMutableArray array];
+    for (NSString *u in units) {
+        if ([all rangeOfString:u].location != NSNotFound) { if (![buy containsObject:u]) [buy addObject:u]; }
+        else [need addObject:u];
+    }
 
     NSMutableString *head = [NSMutableString string];
     if (gold >= 0) [head appendFormat:@"金 %ld ", (long)gold];
@@ -470,10 +547,12 @@ static void TFTTap(CGPoint pt) {
 
     NSString *advice = @"观望";
     if (buy.count) {
-        advice = (gold < 0 || gold >= self.cfg.rollBelowGold)
-            ? [NSString stringWithFormat:@"买 %@（可 D）", [buy componentsJoinedByString:@"/"]]
-            : [NSString stringWithFormat:@"买 %@（别 D）", [buy componentsJoinedByString:@"/"]];
-    } else if (gold > 50) advice = @"攒钱上人口";
+        NSString *roll = (gold < 0 || gold >= self.cfg.rollBelowGold) ? @"可 D" : @"别 D";
+        advice = [NSString stringWithFormat:@"买 %@（%@）", [buy componentsJoinedByString:@"/"], roll];
+    }
+    if (gold >= 50 && (level < 9 || level < 0)) advice = [advice stringByAppendingString:@" · 攒钱上人口"];
+    else if (level > 0 && level <= 5 && gold >= 30) advice = [advice stringByAppendingString:@" · 该上人口了"];
+    if (need.count && need.count <= 4) advice = [advice stringByAppendingFormat:@" · 缺 %@", [need componentsJoinedByString:@"/"]];
 
     /* --- 牌池剩余（按本局商店出现次数估算） --- */
     NSMutableArray *poolParts = [NSMutableArray array];
@@ -495,6 +574,8 @@ static void TFTTap(CGPoint pt) {
     if (newShop) {
         [self log:@"%@ → %@", head.length ? head : @"未识别", advice];
         if (poolParts.count) [self log:@"池: %@", [poolParts componentsJoinedByString:@"  "]];
+        if (buy.count) [self speak:[NSString stringWithFormat:@"买 %@", [buy componentsJoinedByString:@"、"]]];
+        else if (gold >= 50) [self speak:@"攒钱上人口"];
     } else if (!self.lastShopSig.length) {
         [self log:@"%@ → %@", head.length ? head : @"未识别", advice];
     }
