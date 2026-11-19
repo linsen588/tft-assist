@@ -178,6 +178,37 @@ static void TFTTap(CGPoint pt) {
     [self.tts speakUtterance:u];
 }
 
+- (void)toggleCapture {
+    if (self.capturing) {
+        [self stopCapture];
+        [self.btnCapture setTitle:@"开始识别" forState:UIControlStateNormal];
+    } else {
+        [self startCapture];
+        [self.btnCapture setTitle:@"暂停识别" forState:UIControlStateNormal];
+    }
+    [self updateStatus];
+}
+
+- (void)testOCR {
+    if (!self.capturing) { [self log:@"先点「开始识别」并允许屏幕录制"]; return; }
+    self.dumpNext = YES;
+    self.forceFrame = YES;
+    [self log:@"测试中… 下一帧会列出识别到的文字"];
+}
+
+- (void)updateStatus {
+    if (!self.statusLine) return;
+    NSDateFormatter *df = [NSDateFormatter new];
+    df.dateFormat = @"HH:mm:ss";
+    self.statusLine.text = [NSString stringWithFormat:@"%@  %@  行 %ld",
+        self.capturing ? @"● 识别中" : @"● 已停止",
+        self.capturing ? [df stringFromDate:[NSDate date]] : @"--:--:--",
+        (long)self.lastLineCount];
+    self.statusLine.textColor = self.capturing
+        ? [UIColor colorWithRed:0.25 green:0.85 blue:0.5 alpha:1]
+        : [UIColor colorWithWhite:0.62 alpha:1];
+}
+
 - (void)start {
     if (self.started) return;
     self.started = YES;
