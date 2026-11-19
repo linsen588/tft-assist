@@ -1,4 +1,4 @@
-// TFTAssist.xm — 金铲铲之战 iOS 辅助 v0.5
+// TFTAssist.xm — 金铲铲之战 iOS 辅助 v0.5.1
 // 能力：悬浮面板 / ReplayKit 抓屏 / Vision OCR / 阵容建议 / 越狱机自动点击
 // 边界：只读画面，不修改任何游戏数据；概率由服务端决定，不可改。
 
@@ -129,12 +129,33 @@ static void TFTTap(CGPoint pt) {
 @property (nonatomic, strong) NSDictionary *heroCost;
 @end
 
+@interface TFTVC : UIViewController
+@property (nonatomic, assign) UIInterfaceOrientationMask mask;
+@end
+
+@implementation TFTVC
+- (BOOL)shouldAutorotate { return NO; }
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return self.mask; }
+- (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
+@end
+
 @implementation TFTAssist
 
 + (instancetype)shared {
     static TFTAssist *s; static dispatch_once_t o;
     dispatch_once(&o, ^{ s = [TFTAssist new]; });
     return s;
+}
+
+- (void)flipOrientation {
+    TFTVC *vc = (TFTVC *)self.panel.rootViewController;
+    if (![vc isKindOfClass:[TFTVC class]]) return;
+    vc.mask = (vc.mask == UIInterfaceOrientationMaskLandscapeRight)
+        ? UIInterfaceOrientationMaskLandscapeLeft : UIInterfaceOrientationMaskLandscapeRight;
+    if (@available(iOS 16.0, *)) [vc setNeedsUpdateOfSupportedInterfaceOrientations];
+    else [UIViewController attemptRotationToDeviceOrientation];
+    [self log:@"方向已切换"];
+    TFTWriteLog(@"flip mask=%lu", (unsigned long)vc.mask);
 }
 
 - (void)collapse {
@@ -202,10 +223,26 @@ static void TFTTap(CGPoint pt) {
     w.backgroundColor = [UIColor clearColor];
     w.hidden = NO;
 
-    UIViewController *vc = [UIViewController new];
+    /* 跟随游戏方向：金铲铲是横屏，面板必须用同一个方向，否则会"反了" */
+    UIInterfaceOrientation cur = UIInterfaceOrientationUnknown;
+    if (scene) cur = scene.interfaceOrientation;
+    else if (@available(iOS 13.0, *)) cur = UIApplication.sharedApplication.connectedScenes.count
+        ? ((UIWindowScene *)UIApplication.sharedApplication.connectedScenes.allObjects.firstObject).interfaceOrientation
+        : UIInterfaceOrientationUnknown;
+    UIInterfaceOrientationMask mask = UIInterfaceOrientationMaskLandscape;
+    switch (cur) {
+        case UIInterfaceOrientationLandscapeLeft:  mask = UIInterfaceOrientationMaskLandscapeLeft; break;
+        case UIInterfaceOrientationLandscapeRight: mask = UIInterfaceOrientationMaskLandscapeRight; break;
+        case UIInterfaceOrientationPortrait:       mask = UIInterfaceOrientationMaskPortrait; break;
+        case UIInterfaceOrientationPortraitUpsideDown: mask = UIInterfaceOrientationMaskPortraitUpsideDown; break;
+        default: mask = UIInterfaceOrientationMaskLandscape; break;
+    }
+    TFTVC *vc = [TFTVC new];
+    vc.mask = mask;
     vc.view.backgroundColor = [UIColor clearColor];
     w.rootViewController = vc;
     UIView *root = vc.view;
+    TFTWriteLog(@"orientation cur=%ld mask=%lu", (long)cur, (unsigned long)mask);
 
     UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 340, 404)];
     CAGradientLayer *grad = [CAGradientLayer layer];
@@ -219,15 +256,22 @@ static void TFTTap(CGPoint pt) {
     self.box = box;
 
     UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(14, 8, 250, 22)];
-    t.text = @"林森制作 · TFT辅助 v0.5"; t.textColor = UIColor.whiteColor;
+    t.text = @"林森制作 · TFT辅助 v0.5.1"; t.textColor = UIColor.whiteColor;
     t.font = [UIFont boldSystemFontOfSize:14];
     t.userInteractionEnabled = YES;
     [box addSubview:t];
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)];
     [t addGestureRecognizer:pan];
 
+    UIButton *flip = [UIButton buttonWithType:UIButtonTypeSystem];
+    flip.frame = CGRectMake(268, 6, 34, 26);
+    [flip setTitle:@"⟲" forState:UIControlStateNormal];
+    flip.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+    [flip addTarget:self action:@selector(flipOrientation) forControlEvents:UIControlEventTouchUpInside];
+    [box addSubview:flip];
+
     UIButton *mini = [UIButton buttonWithType:UIButtonTypeSystem];
-    mini.frame = CGRectMake(300, 6, 32, 26);
+    mini.frame = CGRectMake(302, 6, 30, 26);
     [mini setTitle:@"—" forState:UIControlStateNormal];
     mini.titleLabel.font = [UIFont boldSystemFontOfSize:17];
     [mini addTarget:self action:@selector(collapse) forControlEvents:UIControlEventTouchUpInside];
