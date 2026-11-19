@@ -1,0 +1,9 @@
+Package: com.linsen.tftassist
+Name: TFTAssist
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: 金铲铲辅助 —— 屏幕识别 + 阵容建议（不修改游戏数据、不改概率）
+Maintainer: linsen
+Author: linsen
+Section: Tweaks
+Depends: mobilesubstrate
