@@ -96,7 +96,7 @@ static void TFTTap(CGPoint pt) {
 #pragma mark - 主逻辑
 
 @interface TFTAssist : NSObject <RPScreenRecorderDelegate>
-@property (nonatomic, strong) UIWindow *panel;
+@property (nonatomic, strong) UIView *panel;
 @property (nonatomic, strong) UITextView *logView;
 @property (nonatomic, strong) UILabel *headline;
 @property (nonatomic, strong) UISwitch *swCapture;
@@ -122,6 +122,7 @@ static void TFTTap(CGPoint pt) {
 @property (nonatomic, assign) BOOL forceFrame;
 @property (nonatomic, strong) NSString *lastHexAdvice;
 @property (nonatomic, assign) NSInteger lastLineCount;
+@property (nonatomic, assign) NSInteger panelTriedCount;
 @property (nonatomic, assign) CFAbsoluteTime lastBuy;
 @property (nonatomic, strong) NSMutableDictionary *seen;
 @property (nonatomic, strong) NSString *lastShopSig;
@@ -147,22 +148,12 @@ static void TFTTap(CGPoint pt) {
     return s;
 }
 
-- (void)flipOrientation {
-    TFTVC *vc = (TFTVC *)self.panel.rootViewController;
-    if (![vc isKindOfClass:[TFTVC class]]) return;
-    vc.mask = (vc.mask == UIInterfaceOrientationMaskLandscapeRight)
-        ? UIInterfaceOrientationMaskLandscapeLeft : UIInterfaceOrientationMaskLandscapeRight;
-    if (@available(iOS 16.0, *)) [vc setNeedsUpdateOfSupportedInterfaceOrientations];
-    else [UIViewController attemptRotationToDeviceOrientation];
-    [self log:@"方向已切换"];
-    TFTWriteLog(@"flip mask=%lu", (unsigned long)vc.mask);
-}
-
 - (void)collapse {
     self.box.hidden = YES;
     self.bubble.hidden = NO;
     CGRect f = self.panel.frame;
     self.panel.frame = CGRectMake(f.origin.x, f.origin.y, 60, 60);
+    [self.panel.superview bringSubviewToFront:self.panel];
     TFTWriteLog(@"panel collapsed");
 }
 
@@ -171,6 +162,7 @@ static void TFTTap(CGPoint pt) {
     self.box.hidden = NO;
     CGRect f = self.panel.frame;
     self.panel.frame = CGRectMake(f.origin.x, f.origin.y, 340, 404);
+    [self.panel.superview bringSubviewToFront:self.panel];
     TFTWriteLog(@"panel expanded");
 }
 
@@ -205,44 +197,36 @@ static void TFTTap(CGPoint pt) {
 
 - (void)buildPanel {
     if (self.panel) return;
+
+    /* 直接挂到游戏自己的 rootVC.view 上：
+       - 跟着游戏一起转屏，不会再"反了"
+       - 最小化时球和面板在同一个容器里，不会消失 */
+    UIWindow *host = nil;
+    for (UIWindow *x in UIApplication.sharedApplication.windows) {
+        if (x.isKeyWindow) { host = x; break; }
+    }
+    if (!host && UIApplication.sharedApplication.windows.count)
+        host = UIApplication.sharedApplication.windows.firstObject;
+    UIViewController *hostVC = host.rootViewController;
+    UIView *root = hostVC.view;
+    if (!root) {
+        if (!self.panelTriedCount) self.panelTriedCount = 0;
+        if (++self.panelTriedCount < 20) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ [self buildPanel]; });
+        } else {
+            TFTWriteLog(@"buildPanel: no root view after retries");
+        }
+        return;
+    }
     self.panelTried = YES;
 
-    UIWindowScene *scene = nil;
-    for (UIScene *sc in UIApplication.sharedApplication.connectedScenes) {
-        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
-        UIWindowScene *ws = (UIWindowScene *)sc;
-        if (ws.activationState == UISceneActivationStateForegroundActive) { scene = ws; break; }
-        if (!scene) scene = ws;
-    }
-
-    CGRect frame = CGRectMake(10, 80, 340, 404);
-    UIWindow *w = scene ? [[UIWindow alloc] initWithWindowScene:scene]
-                        : [[UIWindow alloc] initWithFrame:frame];
-    w.frame = frame;
-    w.windowLevel = UIWindowLevelAlert + 1000;
-    w.backgroundColor = [UIColor clearColor];
-    w.hidden = NO;
-
-    /* 跟随游戏方向：金铲铲是横屏，面板必须用同一个方向，否则会"反了" */
-    UIInterfaceOrientation cur = UIInterfaceOrientationUnknown;
-    if (scene) cur = scene.interfaceOrientation;
-    else if (@available(iOS 13.0, *)) cur = UIApplication.sharedApplication.connectedScenes.count
-        ? ((UIWindowScene *)UIApplication.sharedApplication.connectedScenes.allObjects.firstObject).interfaceOrientation
-        : UIInterfaceOrientationUnknown;
-    UIInterfaceOrientationMask mask = UIInterfaceOrientationMaskLandscape;
-    switch (cur) {
-        case UIInterfaceOrientationLandscapeLeft:  mask = UIInterfaceOrientationMaskLandscapeLeft; break;
-        case UIInterfaceOrientationLandscapeRight: mask = UIInterfaceOrientationMaskLandscapeRight; break;
-        case UIInterfaceOrientationPortrait:       mask = UIInterfaceOrientationMaskPortrait; break;
-        case UIInterfaceOrientationPortraitUpsideDown: mask = UIInterfaceOrientationMaskPortraitUpsideDown; break;
-        default: mask = UIInterfaceOrientationMaskLandscape; break;
-    }
-    TFTVC *vc = [TFTVC new];
-    vc.mask = mask;
-    vc.view.backgroundColor = [UIColor clearColor];
-    w.rootViewController = vc;
-    UIView *root = vc.view;
-    TFTWriteLog(@"orientation cur=%ld mask=%lu", (long)cur, (unsigned long)mask);
+    CGRect rf = root.bounds;
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(16, 60, 340, 404)];
+    container.backgroundColor = [UIColor clearColor];
+    [root addSubview:container];
+    self.panel = container;
+    TFTWriteLog(@"panel v0.5.2 attached to %@ (%.0fx%.0f)", NSStringFromClass([root class]), rf.size.width, rf.size.height);
 
     UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 340, 404)];
     CAGradientLayer *grad = [CAGradientLayer layer];
@@ -252,26 +236,18 @@ static void TFTTap(CGPoint pt) {
     [box.layer insertSublayer:grad atIndex:0];
     box.layer.cornerRadius = 16; box.layer.masksToBounds = YES;
     box.layer.borderWidth = 1; box.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.12].CGColor;
-    [root addSubview:box];
+    [container addSubview:box];
     self.box = box;
 
-    UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(14, 8, 250, 22)];
-    t.text = @"林森制作 · TFT辅助 v0.5.1"; t.textColor = UIColor.whiteColor;
+    UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(14, 8, 240, 22)];
+    t.text = @"林森制作 · TFT辅助 v0.5.2"; t.textColor = UIColor.whiteColor;
     t.font = [UIFont boldSystemFontOfSize:14];
     t.userInteractionEnabled = YES;
     [box addSubview:t];
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)];
-    [t addGestureRecognizer:pan];
-
-    UIButton *flip = [UIButton buttonWithType:UIButtonTypeSystem];
-    flip.frame = CGRectMake(268, 6, 34, 26);
-    [flip setTitle:@"⟲" forState:UIControlStateNormal];
-    flip.titleLabel.font = [UIFont boldSystemFontOfSize:16];
-    [flip addTarget:self action:@selector(flipOrientation) forControlEvents:UIControlEventTouchUpInside];
-    [box addSubview:flip];
+    [t addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)]];
 
     UIButton *mini = [UIButton buttonWithType:UIButtonTypeSystem];
-    mini.frame = CGRectMake(302, 6, 30, 26);
+    mini.frame = CGRectMake(300, 6, 34, 26);
     [mini setTitle:@"—" forState:UIControlStateNormal];
     mini.titleLabel.font = [UIFont boldSystemFontOfSize:17];
     [mini addTarget:self action:@selector(collapse) forControlEvents:UIControlEventTouchUpInside];
@@ -330,7 +306,7 @@ static void TFTTap(CGPoint pt) {
     tv.textColor = [UIColor colorWithWhite:0.94 alpha:1];
     tv.font = [UIFont fontWithName:@"Menlo" size:10.5] ?: [UIFont systemFontOfSize:10.5];
     tv.editable = NO; tv.layer.cornerRadius = 10;
-    tv.text = @"林森制作 · 只读画面，不改任何数据\n\n用法：\n1) 点「开始识别」→ 允许屏幕录制\n2) 点「测试识别」看能否读到字\n   能列出几行字 = 识别正常\n3) 语音/自动换阵/牌池 全自动运行";
+    tv.text = @"林森制作 · 只读画面，不改任何数据\n\n1) 点「开始识别」→ 允许屏幕录制\n2) 点「测试识别」看能否读到字\n3) 「—」收成小球，点小球回来";
     [box addSubview:tv];
     self.logView = tv;
 
@@ -345,57 +321,12 @@ static void TFTTap(CGPoint pt) {
     bubble.titleLabel.font = [UIFont boldSystemFontOfSize:22];
     bubble.hidden = YES;
     [bubble addTarget:self action:@selector(expand) forControlEvents:UIControlEventTouchUpInside];
-    [root addSubview:bubble];
+    [container addSubview:bubble];
     self.bubble = bubble;
     [bubble addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)]];
 
-    self.panel = w;
-    [w makeKeyAndVisible];
-    TFTWriteLog(@"panel v0.5 built scene=%@", scene ? @"yes" : @"no");
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (box.window) return;
-        UIWindow *kw = nil;
-        for (UIWindow *x in UIApplication.sharedApplication.windows)
-            if (x.isKeyWindow) { kw = x; break; }
-        if (!kw && UIApplication.sharedApplication.windows.count) kw = UIApplication.sharedApplication.windows.firstObject;
-        if (kw) { [kw.rootViewController.view addSubview:box]; TFTWriteLog(@"panel fallback -> key window"); }
-    });
-}
-
-#pragma mark 开始 / 测试
-
-- (void)toggleCapture {
-    if (self.capturing) {
-        [self stopCapture];
-        [self.btnCapture setTitle:@"开始识别" forState:UIControlStateNormal];
-    } else {
-        [self startCapture];
-        [self.btnCapture setTitle:@"暂停识别" forState:UIControlStateNormal];
-    }
+    [root bringSubviewToFront:container];
     [self updateStatus];
-}
-
-- (void)testOCR {
-    if (!self.capturing) {
-        [self log:@"先点「开始识别」并允许屏幕录制"];
-        return;
-    }
-    self.dumpNext = YES;
-    self.forceFrame = YES;
-    [self log:@"测试中… 下一帧会把识别到的文字列出来"];
-}
-
-- (void)updateStatus {
-    NSDateFormatter *df = [NSDateFormatter new];
-    df.dateFormat = @"HH:mm:ss";
-    NSString *st = self.capturing ? @"● 识别中" : @"● 已停止";
-    self.statusLine.text = [NSString stringWithFormat:@"%@  %@  行 %ld", st,
-                            self.capturing ? [df stringFromDate:[NSDate date]] : @"--:--:--",
-                            (long)self.lastLineCount];
-    self.statusLine.textColor = self.capturing
-        ? [UIColor colorWithRed:0.25 green:0.85 blue:0.5 alpha:1]
-        : [UIColor colorWithWhite:0.62 alpha:1];
 }
 
 - (UIButton *)btn:(NSString *)title x:(CGFloat)x y:(CGFloat)y w:(CGFloat)w {
