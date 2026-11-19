@@ -331,6 +331,10 @@ static void TFTTap(CGPoint pt) {
     CGPoint d = [g translationInView:self.panel];
     CGRect f = self.panel.frame;
     f.origin.x += d.x; f.origin.y += d.y;
+    /* 限制在屏幕内，始终留 80pt 可点，避免拖丢找不回来 */
+    CGRect sb = [UIScreen mainScreen].bounds;
+    f.origin.x = MAX(-f.size.width + 80, MIN(sb.size.width - 80, f.origin.x));
+    f.origin.y = MAX(44, MIN(sb.size.height - 80, f.origin.y));
     self.panel.frame = f;
     [g setTranslation:CGPointZero inView:self.panel];
 }
