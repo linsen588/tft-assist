@@ -137,6 +137,34 @@ static void TFTTap(CGPoint pt) {
     return s;
 }
 
+- (void)collapse {
+    self.box.hidden = YES;
+    self.bubble.hidden = NO;
+    CGRect f = self.panel.frame;
+    self.panel.frame = CGRectMake(f.origin.x, f.origin.y, 60, 60);
+    TFTWriteLog(@"panel collapsed");
+}
+
+- (void)expand {
+    self.bubble.hidden = YES;
+    self.box.hidden = NO;
+    CGRect f = self.panel.frame;
+    self.panel.frame = CGRectMake(f.origin.x, f.origin.y, 340, 404);
+    TFTWriteLog(@"panel expanded");
+}
+
+- (void)speak:(NSString *)text {
+    if (!self.swVoice.isOn || !text.length) return;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (now - self.lastSpeak < 4.0) return;
+    self.lastSpeak = now;
+    if (!self.tts) self.tts = [AVSpeechSynthesizer new];
+    AVSpeechUtterance *u = [AVSpeechUtterance speechUtteranceWithString:text];
+    u.voice = [AVSpeechSynthesisVoice voiceWithLanguage:@"zh-CN"];
+    u.rate = 0.5f;
+    [self.tts speakUtterance:u];
+}
+
 - (void)start {
     if (self.started) return;
     self.started = YES;
@@ -453,9 +481,11 @@ static void TFTTap(CGPoint pt) {
     NSString *cat = [NSString stringWithUTF8String:tft_hex_catalog];
     for (NSString *pair in [cat componentsSeparatedByString:@";"]) {
         NSArray *kv = [pair componentsSeparatedByString:@"|"];
-        if (kv.count < 2 || !kv[0].length) continue;
-        [names addObject:kv[0]];
-        lv[kv[0]] = @([kv[1] integerValue]);
+        if (kv.count < 2) continue;
+        NSString *nm = (NSString *)kv[0];
+        if (!nm.length) continue;
+        [names addObject:nm];
+        lv[nm] = @([(NSString *)kv[1] integerValue]);
     }
     [names sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
         if (a.length != b.length) return a.length > b.length ? NSOrderedAscending : NSOrderedDescending;
