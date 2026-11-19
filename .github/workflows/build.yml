@@ -1,0 +1,41 @@
+name: build-tweak
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Theos
+        run: |
+          brew install ldid xz make
+          git clone --recursive https://github.com/theos/theos.git $HOME/theos
+          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+          echo "$HOME/theos/bin" >> $GITHUB_PATH
+
+      - name: Build tweak + deb
+        run: |
+          export THEOS=$HOME/theos
+          make clean || true
+          make package FINALPACKAGE=1 DEBUG=0
+          echo "--- artifacts ---"
+          find . -name "*.dylib" -o -name "*.deb" | sort
+
+      - name: Collect
+        run: |
+          mkdir -p out
+          cp $(find .theos -name "TFTAssist.dylib" | head -n 1) out/ || true
+          cp $(find packages -name "*.deb" | head -n 1) out/ || true
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TFTAssist-build
+          path: |
+            out/*.dylib
+            out/*.deb
+          if-no-files-found: error
